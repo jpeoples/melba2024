@@ -747,7 +747,7 @@ def multivariate_survival_args(args):
 
     else:
         loop_sizes = numpy.cumprod(lengths[-1:0:-1])[::-1].tolist()+[1]
-        arg_names = ["--repeat", "--feature_set", "--feature_counts", "--feature_selection"]
+        arg_names = ["--repeat", "--feature_set", "--feature_count", "--feature_selection"]
         remainder = index
         results = []
         for name, length, loop_size in zip(arg_names, lengths, loop_sizes):
