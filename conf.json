@@ -1,0 +1,43 @@
+{
+    "r_path": "C:\\Program Files\\R\\R-4.2.2\\bin\\Rscript.exe",
+    "r_scripts": {
+        "lmm": "ccc_lmm_auto.R"
+    },
+    "data": "data",
+    "repro_tables": {
+        "L2i": "input/repro/L2i.csv",
+        "L2": "input/repro/L2.csv",
+        "L3": "input/repro/L3.csv",
+        "S2i": "input/repro/S2i.csv",
+        "S2": "input/repro/S2.csv",
+        "S3": "input/repro/S3.csv",
+        "A2": "input/repro/A2.csv",
+        "A3": "input/repro/A3.csv"
+    },
+    "survival_tables": {
+        "L2i": "input/survival/L2i.csv",
+        "L2": "input/survival/L2.csv",
+        "L3": "input/survival/L3.csv",
+        "S2i": "input/survival/S2i.csv",
+        "S2": "input/survival/S2.csv",
+        "S3": "input/survival/S3.csv",
+        "A2": "input/survival/A2.csv",
+        "A3": "input/survival/A3.csv"
+    },
+    "survival_data": "input/survival/clin.csv",
+    "univariate_survival": {
+        "time": "overall_survival_months",
+        "event": "vital_status"
+    },
+    "multivariate_survival": {
+        "time": "overall_survival_months",
+        "event": "vital_status",
+        "seed_generator_seed": 42,
+        "cv_n_fold": 10,
+        "cv_repeats": 1,
+        "ccc_threshold": 0.8,
+        "feature_counts": [5, 10, 15, 20, 40, 80],
+        "feature_sets": ["L2i", "S2i", "L2", "S2", "A2", "L3", "S3", "A3", "all"],
+        "feature_selection": ["mRMR", "mRMRReproThresh", "mRMRReproWeighted"]
+    }
+}
