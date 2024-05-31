@@ -2,6 +2,7 @@
 *__pycache__*
 
 data/
+slurm_logs/
 
 *.pdf
 *.svg
