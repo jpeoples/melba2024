@@ -732,7 +732,38 @@ def multivariate_survival_parser(parser):
     parser.add_argument('--feature_count', type=int, required=True)
     parser.add_argument('--feature_selection', type=int, required=True)
 
-    
+
+@entry.point
+def multivariate_survival_args(args):
+    util = Utils.from_file(args.conf)
+    index = args.index
+    conf = util.conf['multivariate_survival']
+    lengths = [conf['cv_repeats'], len(conf['feature_sets']), len(conf['feature_counts']), len(conf['feature_selection'])]
+
+    total = numpy.product(lengths)
+    assert index < total
+    if index < 0:
+        print(total)
+
+    else:
+        loop_sizes = numpy.cumprod(lengths[-1:0:-1])[::-1].tolist()+[1]
+        arg_names = ["--repeat", "--feature_set", "--feature_counts", "--feature_selection"]
+        remainder = index
+        results = []
+        for name, length, loop_size in zip(arg_names, lengths, loop_sizes):
+            value = remainder // loop_size
+            remainder = remainder % loop_size
+
+            assert value < length
+            results.extend([name, str(value)])
+
+        print(" ".join(results))
+
+@multivariate_survival_args.parser
+def _(parser):
+    parser.add_argument("index", type=int)
+
+
 
 
 
