@@ -24,6 +24,7 @@ import seaborn as sns
 from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.base import BaseEstimator
 from sklearn.preprocessing import StandardScaler
+from sklearn.feature_selection import VarianceThreshold
 from lifelines import CoxPHFitter
 from lifelines.utils import concordance_index
 
@@ -216,11 +217,13 @@ class CrossValidation:
 
 class Normalizer:
     def compute_normalization(self, X):
+        self.threshold_ = VarianceThreshold()
+        X = self.threshold_.fit_transform(X)
         self.scaler_ = StandardScaler()
         self.scaler_.fit(X)
 
     def normalize(self, X):
-        Xout = pandas.DataFrame(self.scaler_.transform(X), index=X.index, columns=X.columns)
+        Xout = pandas.DataFrame(self.scaler_.transform(self.threshold_.transform(X)), index=X.index, columns=X.columns)
         return Xout
 
 
