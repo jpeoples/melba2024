@@ -192,6 +192,18 @@ class Utils:
         cv = CrossValidation(StratifiedKFold(nfolds, shuffle=True, random_state=seed))
         return cv
 
+    def multivariate_combinations(self):
+        conf = self.conf['multivariate_survival']
+
+        repeats = list(range(conf['cv_repeats']))
+        counts=conf['feature_counts']
+        fsets = conf['feature_sets']
+        fsels = conf['feature_selection']
+
+        return set([(st, cnt, sel, rep) for st in fsets for cnt in counts for sel in fsels for rep in repeats])
+
+        
+
 
 def blast_out_extractors(tab):
     out = []
@@ -223,7 +235,7 @@ class Normalizer:
         self.scaler_.fit(X)
 
     def normalize(self, X):
-        Xout = pandas.DataFrame(self.scaler_.transform(self.threshold_.transform(X)), index=X.index, columns=X.columns)
+        Xout = pandas.DataFrame(self.scaler_.transform(self.threshold_.transform(X)), index=X.index, columns=self.threshold_.get_feature_names_out(X.columns))
         return Xout
 
 
