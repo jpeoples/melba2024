@@ -182,10 +182,9 @@ class Utils:
         fsel_constructor = self.multivariate_feature_selector(args)
         return MultivariateSurvival(nfeat, fsel_constructor)
 
-    def multivariate_cross_validation(self, args):
+    def multivariate_cross_validation(self, args, repeat):
         nfolds = self.conf['multivariate_survival']['cv_n_fold']
         repeats = self.conf['multivariate_survival']['cv_repeats']
-        repeat = args.repeat
         assert repeat <= repeats
 
         seed = self.get_random_state(repeat)
@@ -245,11 +244,89 @@ class mRMRFeatSel:
         self.feat_prefs = feat_prefs
 
     def select_features(self, X, y):
-        selected = mrmr_surv(X, y, self.nfeat, relevance=lambda X, y: surv_rel(X, y, feature_prefs=self.feat_prefs))
+        selected = mrmr_surv(X, y, self.nfeat, relevance=lambda X, y: surv_rel(X, y, feature_prefs=self.feat_prefs), show_progress=False, n_jobs=1)
         self.selected_ = selected
 
     def get_selected(self, X):
         return X.loc[:, self.selected_]
+
+def feature_agglom_by_thresh(features, thresh):
+    from sklearn.cluster import FeatureAgglomeration
+    #print("...clustering")
+    corr = features.corr(method='spearman').abs()
+    cl = FeatureAgglomeration(distance_threshold=1-thresh, n_clusters=None, metric='precomputed', linkage='single')
+    cl.fit(1-corr)
+
+    return pandas.Series({ix: cli for ix, cli in zip(features.columns, cl.labels_)})
+def univar_cox(surv, ft):
+    from lifelines.exceptions import ConvergenceError
+    fitter = CoxPHFitter()
+    data = surv.join(ft)
+    data = data.dropna(axis='index')
+
+    try:
+        fitter.fit(data, duration_col="time", event_col="event")
+        res = fitter.summary.loc[ft.name, ['exp(coef)', 'p']]
+        res.index = ['HR', 'p-value']
+    except ConvergenceError:
+        res = pandas.Series({"HR": 1, "p-value": 1})
+        print(f"Failed on {ft.name}")
+
+    return res
+
+def select_best_features_from_clusters(clusters, features, surv):
+    clusters = clusters[features.columns.intersection(clusters.index)]
+    #print("...ranking")
+    #ranking = univar_rank(time_col, event_col, features)
+    #print('...somers')
+    somers = surv_rel(features, surv)
+    #ranking['somers'] = somers
+    #print(ranking[['p-value', 'somers']].corr(method='spearman'))
+    #all_selected = ranking.loc[ranking['p-value'] < 0.05].index
+
+    all_selected = []
+    #print("...sorting through")
+    for cli, cluster_features in clusters.groupby(clusters):
+        cluster_ranks = somers[cluster_features.index]
+        sorted = cluster_ranks.sort_values(ascending=False)
+        for ix, d in sorted.items():
+            if d < 0.1:
+                break
+            res = univar_cox(surv, features[ix])
+            if res['p-value'] < 0.1:
+                all_selected.append(ix)
+                break
+        #best = cluster_ranks.idxmax()
+        #if cluster_ranks[best] > 0.1:
+        #    all_selected.append(best)
+        #cluster_ranks = ranking.loc[cluster_features.index, "p-value"]
+        #selected = cluster_ranks.sort_values()
+        #for ix, pval in selected.items():
+        #    if pval < 0.1: #and cccs.loc[preproc, ix] > 0.9:
+        #        all_selected.append(ix)
+        #        break
+
+    #print("...ordering")
+    selected_ranks = somers.loc[all_selected]
+    order = selected_ranks.sort_values().index
+
+
+    return features.loc[:, order]
+class HierarchicalFeatureSelector:
+    def __init__(self, thresh):
+        self.corr_thresh = thresh
+
+    def select_features(self, X, y):
+        clusters = feature_agglom_by_thresh(X, self.corr_thresh)
+        selfeat = select_best_features_from_clusters(clusters, X, y)
+
+        self.selected_ = selfeat.columns.tolist()
+        print(len(self.selected_), clusters.max()+1)
+
+        return self
+
+    def get_selected(self, ds):
+        return ds.loc[:, self.selected_]
 
 class ReproFeatSel:
     def __init__(self, nfeat, repro_features):
@@ -279,6 +356,8 @@ def surv_rel(X, y, feature_prefs=None):
 
     return oci
 
+
+
 def mrmr_surv(
         X, y, K,
         relevance = None, redundancy='c', denominator='mean',
@@ -286,6 +365,17 @@ def mrmr_surv(
         only_same_domain=False, return_scores=False,
         n_jobs=-1, show_progress=True
 ):
+    rels = relevance(X, y)
+    X = X.loc[:, rels > 0.55]
+    to_keep = []
+    for ft in X.columns:
+        res = univar_cox(y, X[ft])
+        if res['p-value'] < 0.1:
+            to_keep.append(ft)
+
+    X = X.loc[:, to_keep]
+    print("Remaining to select", X.shape[1])
+
     if relevance is None:
         relevance = surv_rel
     return mrmr.mrmr_classif(X, y, K, relevance=relevance, redundancy=redundancy, denominator=denominator, cat_features=cat_features, cat_encoding=cat_encoding, only_same_domain=only_same_domain, return_scores=return_scores, n_jobs=n_jobs, show_progress=show_progress)
@@ -661,6 +751,32 @@ def univariate_survival(args):
 
 @entry.point
 def multivariate_survival(args):
+    from joblib import Parallel, delayed
+    conf = Utils.from_file(args.conf)
+    reps = conf.conf['multivariate_survival']['cv_repeats']
+
+    results = Parallel(n_jobs=args.jobs, verbose=10)(delayed(_multivariate_survival_one_repeat)(conf, args, rep) for rep in range(reps))
+
+    names = set()
+    result_tables = []
+    fsel_tables = []
+    for metadata, result, fsel in results:
+        metadata_name = f"{metadata['feature_set']}_{metadata['feature_selection']}_{metadata['feature_count']}"
+        names.add(metadata_name)
+        result_tables.append(result)
+        fsel_tables.append(fsel)
+
+    assert len(names) == 1
+    metadata_name = names.pop()
+    table = pandas.concat(result_tables, axis=0)
+    fsel_table = pandas.concat(fsel_tables, axis=0)
+
+    table.to_csv(conf.working_path(f"multivariate_survival/scores/{metadata_name}.csv", write=True), index=False)
+    fsel_table.to_csv(conf.working_path(f'multivariate_survival/features/{metadata_name}.csv', write=True), index=False)
+
+    
+
+def _multivariate_survival_one_repeat(conf, args, repeat):
     def do_score(est, ind, X, y):
         X = X.iloc[ind]
         y = y.iloc[ind]
@@ -671,16 +787,15 @@ def multivariate_survival(args):
         sc = est.predict(X)
         return sc
 
-    conf = Utils.from_file(args.conf)
 
     metadata = dict(
         feature_set=conf.conf['multivariate_survival']['feature_sets'][args.feature_set],
         feature_count=conf.conf['multivariate_survival']['feature_counts'][args.feature_count],
         feature_selection=conf.conf['multivariate_survival']['feature_selection'][args.feature_selection],
-        cv_repeat = args.repeat
+        cv_repeat = repeat
     )
 
-    cv = conf.multivariate_cross_validation(args)
+    cv = conf.multivariate_cross_validation(args, repeat)
     model = conf.multivariate_survival_model(args)
     features = conf.multivariate_survival_features(args)
     outcomes = conf.multivariate_survival_outcome()
@@ -703,7 +818,6 @@ def multivariate_survival(args):
         return md
 
 
-    repeat = args.repeat
     rows = []
     fsel_rows = []
     preds = []
@@ -732,20 +846,20 @@ def multivariate_survival(args):
     ))
     rows.append(row)
 
-    metadata_name = f"{metadata['feature_set']}_{metadata['feature_selection']}_{metadata['feature_count']}_{metadata['cv_repeat']}"
     table = pandas.DataFrame.from_records(rows)
-    table.to_csv(conf.working_path(f"multivariate_survival/scores/{metadata_name}.csv", write=True), index=False)
+    #table.to_csv(conf.working_path(f"multivariate_survival/scores/{metadata_name}.csv", write=True), index=False)
 
     fsel_table = pandas.DataFrame.from_records(fsel_rows)
-    fsel_table.to_csv(conf.working_path(f'multivariate_survival/features/{metadata_name}.csv', write=True), index=False)
+    #fsel_table.to_csv(conf.working_path(f'multivariate_survival/features/{metadata_name}.csv', write=True), index=False)
+    return metadata, table, fsel_table
 
 
 @multivariate_survival.parser
 def multivariate_survival_parser(parser):
-    parser.add_argument('--repeat', type=int, required=True)
     parser.add_argument('--feature_set', type=int, required=True)
     parser.add_argument('--feature_count', type=int, required=True)
     parser.add_argument('--feature_selection', type=int, required=True)
+    parser.add_argument("--jobs", type=int, required=False, default=-1)
 
 
 @entry.point
@@ -753,7 +867,7 @@ def multivariate_survival_args(args):
     util = Utils.from_file(args.conf)
     index = args.index
     conf = util.conf['multivariate_survival']
-    lengths = [conf['cv_repeats'], len(conf['feature_sets']), len(conf['feature_counts']), len(conf['feature_selection'])]
+    lengths = [len(conf['feature_sets']), len(conf['feature_counts']), len(conf['feature_selection'])]
 
     total = numpy.product(lengths)
     assert index < total
@@ -762,7 +876,7 @@ def multivariate_survival_args(args):
 
     else:
         loop_sizes = numpy.cumprod(lengths[-1:0:-1])[::-1].tolist()+[1]
-        arg_names = ["--repeat", "--feature_set", "--feature_count", "--feature_selection"]
+        arg_names = ["--feature_set", "--feature_count", "--feature_selection"]
         remainder = index
         results = []
         for name, length, loop_size in zip(arg_names, lengths, loop_sizes):
