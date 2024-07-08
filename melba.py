@@ -557,7 +557,7 @@ def drop_unnormalized(tab):
 def load_repro_table(fname):
     tab = pandas.read_csv(fname, index_col=0)
     tab = drop_diagnostics(tab)
-    tab = drop_unnormalized(tab)
+    #tab = drop_unnormalized(tab)
     tab = expand_repro_index(tab)
 
     return tab
@@ -565,7 +565,7 @@ def load_repro_table(fname):
 def load_survival_table(fname):
     tab = pandas.read_csv(fname, index_col=0)
     tab = drop_diagnostics(tab)
-    tab = drop_unnormalized(tab)
+    #tab = drop_unnormalized(tab)
     return tab
 
 
@@ -750,10 +750,10 @@ def lmm_cccs(args):
         tab = tab.xs(ext, level='extractor').xs('clinical', level='timepoint')
         
         rtab_path = util.working_path(f'lmm/{ext}.csv', write=True)
-        #tab.to_csv(rtab_path)
+        tab.to_csv(rtab_path)
         result_path = util.working_path(f'lmm/{ext}_cccs.csv', write=True)
 
-        #util.r_run('lmm', (rtab_path, result_path))
+        util.r_run('lmm', (rtab_path, result_path))
         lmm_result = pandas.read_csv(result_path, index_col=0).reset_index(drop=True)
         lmm_result['extractor'] = ext
         lmm_result = lmm_result.set_index(['extractor', 'feature']).dropna(axis='index')
@@ -864,7 +864,8 @@ def _multivariate_survival_one_repeat(conf, args, repeat):
         res = cross_validate(model, features, outcomes, cv=cv, return_train_score=True, return_estimator=True, return_indices=True)
     except ValueError:
         print("Every fold failed! :(")
-        sys.exit(0)
+        raise
+
     train_scores = res['train_score']
     test_scores = res['test_score']
 
