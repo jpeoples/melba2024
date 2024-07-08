@@ -164,18 +164,31 @@ class Utils:
 
             return cccs
 
-        cccs = cccs_for_feature_set(args)
-        thresh = self.conf['multivariate_survival']['ccc_threshold']
-        thresh_keep = cccs >= thresh
-        thresh_keep = cccs.index[thresh_keep]
-        constructors = {
-            "mRMR": lambda n: mRMRFeatSel(n, None),
-            "mRMRReproThresh": lambda n: ReproFeatSel(n, thresh_keep),
-            "mRMRReproWeighted": lambda n: mRMRFeatSel(n, cccs)
-        }
-        feature_selection = self.conf['multivariate_survival']['feature_selection'][args.feature_selection]
+        #cccs = cccs_for_feature_set(args)
+        #thresh = self.conf['multivariate_survival']['ccc_threshold']
+        #thresh_keep = cccs >= thresh
+        #thresh_keep = cccs.index[thresh_keep]
+        #constructors = {
+        #    "mRMR": lambda n: mRMRFeatSel(n, None),
+        #    "mRMRReproThresh": lambda n: ReproFeatSel(n, thresh_keep),
+        #    "mRMRReproWeighted": lambda n: mRMRFeatSel(n, cccs)
+        #}
+        
+        fs_conf = self.conf['multivariate_survival']['feature_selection'][args.feature_selection]
+        if "ccc_threshold" in fs_conf:
+            cccs = cccs_for_feature_set(args)
+            thresh = fs_conf['ccc_threshold']
+            thresh_keep = cccs >= thresh
+            thresh_keep = cccs.index[thresh_keep]
+            selectors = [ListFeatSel(thresh_keep)]
+        else:
+            selectors = []
+        
+        univar = UnivarSigFeatSel(rel_thresh=self.conf['multivariate_survival']['ci_threshold'], p_thresh=self.conf['multivariate_survival']['p_threshold'])
+        selectors.append(univar)
 
-        return constructors[feature_selection]
+        selectors = tuple(selectors)
+        return lambda n: FeatureSelectorChain(list(selectors)+[mRMRFeatSel(n, None)])
 
     def multivariate_survival_model(self, args):
         nfeat = self.conf['multivariate_survival']['feature_counts'][args.feature_count]
@@ -237,6 +250,41 @@ class Normalizer:
         Xout = pandas.DataFrame(self.scaler_.transform(self.threshold_.transform(X)), index=X.index, columns=self.threshold_.get_feature_names_out(X.columns))
         return Xout
 
+def surv_rel(X, y, feature_prefs=None):
+    ci = compute_harrels_per_features(X, y)
+    dxy = 2 * ci - 1
+    adxy = dxy.abs()
+    oci = (adxy + 1) / 2
+
+    if feature_prefs is not None:
+        oci = (oci - oci.min()) / (oci.max() - oci.min())
+        fp = (feature_prefs - feature_prefs.min()) / (feature_prefs.max() - feature_prefs.min())
+        oci = oci * fp
+
+    return oci
+
+class UnivarSigFeatSel:
+    def __init__(self, rel_thresh=0.55, p_thresh=0.1, relevance=surv_rel):
+        self.rel_thresh=rel_thresh
+        self.p_thresh = p_thresh
+        self.relevance = relevance
+
+    def select_features(self, X, y):
+        rels = self.relevance(X, y)
+        X = X.loc[:, rels > self.rel_thresh]
+        to_keep = []
+        for ft in X.columns:
+            res = univar_cox(y, X[ft])
+            if res['p-value'] < self.p_thresh:
+                to_keep.append(ft)
+
+        #X = X.loc[:, to_keep]
+        print("Remaining after univar:", len(to_keep))
+        self.selected_ = to_keep
+
+    def get_selected(self, X):
+        return X.loc[:, self.selected_]
+
 
 class mRMRFeatSel:
     def __init__(self, nfeat=10, feat_prefs=None):
@@ -246,6 +294,20 @@ class mRMRFeatSel:
     def select_features(self, X, y):
         selected = mrmr_surv(X, y, self.nfeat, relevance=lambda X, y: surv_rel(X, y, feature_prefs=self.feat_prefs), show_progress=False, n_jobs=1)
         self.selected_ = selected
+
+    def get_selected(self, X):
+        return X.loc[:, self.selected_]
+
+class FeatureSelectorChain:
+    def __init__(self, selectors):
+        self.selectors = selectors
+
+    def select_features(self, X, y):
+        for sel in self.selectors:
+            sel.select_features(X, y)
+            X = sel.get_selected(X)
+
+        self.selected_ = X.columns
 
     def get_selected(self, X):
         return X.loc[:, self.selected_]
@@ -328,6 +390,17 @@ class HierarchicalFeatureSelector:
     def get_selected(self, ds):
         return ds.loc[:, self.selected_]
 
+class ListFeatSel:
+    def __init__(self, feature_list):
+        self.feature_list = feature_list
+
+    def select_features(self, X, y):
+        self.selected_ = self.feature_list
+
+    def get_selected(self, X):
+        return X.loc[:, self.selected_]
+
+
 class ReproFeatSel:
     def __init__(self, nfeat, repro_features):
         self.repro_features = repro_features
@@ -343,19 +416,6 @@ class ReproFeatSel:
         return self.mrmr_.get_selected(X)
 
 
-def surv_rel(X, y, feature_prefs=None):
-    ci = compute_harrels_per_features(X, y)
-    dxy = 2 * ci - 1
-    adxy = dxy.abs()
-    oci = (adxy + 1) / 2
-
-    if feature_prefs is not None:
-        oci = (oci - oci.min()) / (oci.max() - oci.min())
-        fp = (feature_prefs - feature_prefs.min()) / (feature_prefs.max() - feature_prefs.min())
-        oci = oci * fp
-
-    return oci
-
 
 
 def mrmr_surv(
@@ -365,19 +425,19 @@ def mrmr_surv(
         only_same_domain=False, return_scores=False,
         n_jobs=-1, show_progress=True
 ):
-    rels = relevance(X, y)
-    X = X.loc[:, rels > 0.55]
-    to_keep = []
-    for ft in X.columns:
-        res = univar_cox(y, X[ft])
-        if res['p-value'] < 0.1:
-            to_keep.append(ft)
+    #rels = relevance(X, y)
+    #X = X.loc[:, rels > 0.55]
+    #to_keep = []
+    #for ft in X.columns:
+    #    res = univar_cox(y, X[ft])
+    #    if res['p-value'] < 0.1:
+    #        to_keep.append(ft)
 
-    X = X.loc[:, to_keep]
-    print("Remaining to select", X.shape[1])
+    #X = X.loc[:, to_keep]
+    #print("Remaining to select", X.shape[1])
 
-    if relevance is None:
-        relevance = surv_rel
+    #if relevance is None:
+    #    relevance = surv_rel
     return mrmr.mrmr_classif(X, y, K, relevance=relevance, redundancy=redundancy, denominator=denominator, cat_features=cat_features, cat_encoding=cat_encoding, only_same_domain=only_same_domain, return_scores=return_scores, n_jobs=n_jobs, show_progress=show_progress)
 
 
@@ -761,7 +821,7 @@ def multivariate_survival(args):
     result_tables = []
     fsel_tables = []
     for metadata, result, fsel in results:
-        metadata_name = f"{metadata['feature_set']}_{metadata['feature_selection']}_{metadata['feature_count']}"
+        metadata_name = f"{metadata['feature_set']}_{int(metadata['ccc_threshold']*100):02d}_{metadata['feature_count']}"
         names.add(metadata_name)
         result_tables.append(result)
         fsel_tables.append(fsel)
@@ -791,7 +851,7 @@ def _multivariate_survival_one_repeat(conf, args, repeat):
     metadata = dict(
         feature_set=conf.conf['multivariate_survival']['feature_sets'][args.feature_set],
         feature_count=conf.conf['multivariate_survival']['feature_counts'][args.feature_count],
-        feature_selection=conf.conf['multivariate_survival']['feature_selection'][args.feature_selection],
+        ccc_threshold=conf.conf['multivariate_survival']['feature_selection'][args.feature_selection].get("ccc_threshold", 0.0),
         cv_repeat = repeat
     )
 

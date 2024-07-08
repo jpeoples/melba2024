@@ -35,9 +35,16 @@
         "seed_generator_seed": 42,
         "cv_n_fold": 10,
         "cv_repeats": 100,
-        "ccc_threshold": 0.8,
-        "feature_counts": [5, 10, 15, 20, 40, 80],
+        "p_threshold": 0.1,
+        "ci_threshold": 0.55,
+        "feature_counts": [1, 2, 4, 8, 16, 32, 64],
         "feature_sets": ["L2i", "S2i", "L2", "S2", "A2", "L3", "S3", "A3", "all"],
-        "feature_selection": ["mRMR", "mRMRReproThresh", "mRMRReproWeighted"]
+        "feature_selection": [
+            {},
+            {"ccc_threshold": 0.8},
+            {"ccc_threshold": 0.85},
+            {"ccc_threshold": 0.9},
+            {"ccc_threshold": 0.95}
+        ]
     }
 }
