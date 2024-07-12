@@ -809,6 +809,73 @@ def univariate_survival(args):
 
     table.to_csv(util.working_path('survival/univariate_c-indices.csv', write=True))
 
+
+@entry.point
+def cluster_figs(args):
+    figs = FigSet()
+    w = figs.wmultiple
+    h = figs.hmultiple
+    w *= 2/4
+    h *= 2
+    
+    util = Utils.from_file(args.conf)
+    cccs = pandas.read_csv(util.working_path('lmm_cccs.csv'), index_col=[0,1])
+    cccs['feature_group'] = cccs['feature_family'].map(lambda s: 'First Order' if s=='firstorder' else s.upper())
+    cis = pandas.read_csv(util.working_path('survival/univariate_c-indices.csv'), index_col=[0,1])
+    groups = cccs.groupby('feature_name')['feature_group'].value_counts().reset_index('feature_group')['feature_group']
+
+
+    def do_plot(ccc_map, groups, w, h):
+        ugroups = groups.unique()
+        colors = sns.color_palette()
+        cmap = pandas.Series(colors[:len(ugroups)], index=ugroups)
+        fcolors = ccc_map.index.map(groups).map(cmap)
+        fcolors.name = "Feature Class"
+        fig = sns.clustermap(ccc_map, col_cluster=True, metric='euclidean', method='ward', row_colors=fcolors, dendrogram_ratio=(0.2, 0.1), yticklabels=False, xticklabels=1, figsize=(w,h))
+        return fig
+
+    ccc_map = pandas.pivot_table(cccs, values='ccc', index='feature_name', columns=['extractor', 'roi']).dropna(axis=0)
+    ccc_map.columns = ccc_map.columns.map(lambda s: f"{s[1][0]}-{s[0]}")
+    ccc_map.columns.name = None
+    ccc_map.index.name = "Feature"
+    f = do_plot(ccc_map, groups, w*2, h)
+    f.savefig(util.output_path("figs/ccc_cluster_roi_labelled.pdf", write=True))
+    figs.figs.append(f)
+    ccc_map = pandas.pivot_table(cccs, values='ccc', index='feature_name', columns=['extractor', 'roi']).dropna(axis=0)
+    ccc_map.columns = ccc_map.columns.map(lambda s: s[0])
+    ccc_map.columns.name = None
+    ccc_map.index.name = "Feature"
+    f = do_plot(ccc_map, groups, w*2, h)
+    f.savefig(util.output_path("figs/ccc_cluster_no_roi.pdf", write=True))
+    figs.figs.append(f)
+
+    #do_plot(cis, groups)
+    # NOTE 0.922 is an empirically derived ratio to get the heights of the actual clusters to roughly match with the CCC plot above (due to longer column labels..)
+    lcis = cis.loc[cis['roi']=='liver']
+    ccc_map = pandas.pivot_table(lcis, values='abs_c-index', index='feature_name', columns=['extractor']).dropna(axis=0)
+    ccc_map.columns.name = None
+    ccc_map.index.name = "Feature"
+    f = do_plot(ccc_map, groups, w, h)
+    f.savefig(util.output_path("figs/ci_cluster_liver.pdf", write=True))
+    figs.figs.append(f)
+
+    tcis = cis.loc[cis['roi']=='tumor']
+    ccc_map = pandas.pivot_table(tcis, values='abs_c-index', index='feature_name', columns=['extractor']).dropna(axis=0)
+    ccc_map.columns.name = None
+    ccc_map.index.name = "Feature"
+    f = do_plot(ccc_map, groups, w, h)
+    f.savefig(util.output_path("figs/ci_cluster_tumor.pdf", write=True))
+    figs.figs.append(f)
+    #figs.set_dpi(72)
+
+    fig, ax = figs.make_fig(1,1)
+    sns.boxplot(cccs.rename(columns={"feature_group": "Feature Class"}), x='ccc', y='roi', hue='Feature Class', ax=ax)
+    fig.savefig(util.output_path("figs/cluster_legend_source.pdf", write=True))
+    fig.set_dpi(72)
+
+
+    pyplot.show()
+
 @entry.point
 def multivariate_survival(args):
     from joblib import Parallel, delayed
