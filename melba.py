@@ -663,9 +663,9 @@ class FigSet:
         self.hmultiple = 4.8
         self.dpi = 600
 
-    def make_fig(self, w, h, nrow=1, ncol=1):
+    def make_fig(self, w=1, h=1, nrow=1, ncol=1, layout='constrained', **kwargs):
         plt = pyplot
-        fig, ax = plt.subplots(nrow, ncol, figsize=(self.wmultiple*w, self.hmultiple*h), dpi=self.dpi, layout='constrained')
+        fig, ax = plt.subplots(nrow, ncol, figsize=(self.wmultiple*w, self.hmultiple*h), dpi=self.dpi, layout=layout, **kwargs)
         self.figs.append(fig)
         return fig, ax
 
@@ -873,7 +873,6 @@ def cluster_figs(args):
     fig.savefig(util.output_path("figs/cluster_legend_source.pdf", write=True))
     fig.set_dpi(72)
 
-
     pyplot.show()
 
 @entry.point
@@ -1019,6 +1018,150 @@ def multivariate_survival_args(args):
 @multivariate_survival_args.parser
 def _(parser):
     parser.add_argument("index", type=int)
+
+
+@entry.point
+def multivariate_figs(args):
+    import seaborn as sns
+    util = Utils.from_file(args.conf)
+
+    scores = pandas.read_csv(util.working_path('multivariate_survival/scores.csv'), index_col=[0,1,2,3,4])
+    outer = scores.loc[scores['score_type']=='outer']
+    inner_mns = scores.loc[scores['score_type']=='inner'].groupby(['feature_set', 'feature_count', 'ccc_threshold', 'cv_repeat']).mean(numeric_only=True)
+
+    figs = FigSet()
+    fig, ax = figs.make_fig(1,1)
+
+    count = 4
+    cmp_threshold=0.85
+
+    
+    # NOTE: This ordering comes from the clustering ordering (plus all at the front)
+    set_order = ["all", "L2i", "S2i", "L2", "S2", "A2", "L3", "S3", "A3"]
+
+    tab = outer.xs(count, level='feature_count').copy()
+    itab = inner_mns.xs(count, level='feature_count')
+    tab = tab.loc[(tab.index.get_level_values('ccc_threshold') == 0) | (tab.index.get_level_values('ccc_threshold')==cmp_threshold)]
+    train_vals = itab.loc[tab.index, 'train']
+    tab['CCC'] = tab.index.get_level_values('ccc_threshold').map(lambda c: f"CCC={c:0.02f}")
+    tab['CCC'] = tab.index.get_level_values('ccc_threshold').map(lambda c: f"CCC={c:0.02f}")
+    tab['train'] = train_vals
+
+    tab = tab.rename(columns=dict(feature_set="Extractor", test="Test C-index", train="Train C-index"))
+    sns.boxplot(tab, x='feature_set', y='Test C-index', hue='CCC', ax=ax, legend=False, order=set_order)
+    sns.pointplot(tab, x='feature_set', y='Train C-index', hue='CCC', errorbar='pi', linestyle='--',  ax=ax, legend=False)
+    ax.set_ylim(0.5, 0.68)
+    ax.set_ylabel("C-index")
+    ax.set_xlabel("Extractor")
+    ax.grid(visible=True, axis='y')
+    fig.savefig(util.output_path("figs/boxplot_4_85.pdf"))
+
+    # These are just to get the legends out of!
+    fig, ax = figs.make_fig(1,1)
+    tabx = tab.rename(columns=dict(CCC="Test"))
+    sns.boxplot(tabx, x='feature_set', y='Test C-index', hue='Test',  legend=True, ax=ax)
+    fig.savefig(util.output_path("figs/boxplot_4_85_test_legend.pdf"))
+    fig, ax = figs.make_fig(1,1)
+    tabx = tab.rename(columns=dict(CCC="Train"))
+    sns.pointplot(tabx, x='feature_set', y='Train C-index', hue='Train', linestyle='--', legend=True, ax=ax)
+    fig.savefig(util.output_path("figs/boxplot_4_85_train_legend.pdf"))
+
+
+    # Generate table of top 10 performers
+    t = outer.droplevel('cv_fold')
+    means = t.groupby(['feature_set', 'feature_count', 'ccc_threshold'])['test'].mean()#.sort_values(ascending=False)[:10]
+    cis = t.groupby(['feature_set', 'feature_count', 'ccc_threshold'])['test'].quantile([0.025, 0.975]).to_frame()
+    cis.index.names = ['feature_set', 'feature_count', 'ccc_threshold', 'quantile']
+    cis = pandas.pivot_table(cis, values='test', index=['feature_set', 'feature_count', 'ccc_threshold'], columns='quantile')
+
+    top_means = means.sort_values(ascending=False)[:10].to_frame('mean')
+    top_index = top_means.index
+    tops = top_means.join(cis, how='left')
+
+    formatted = tops.apply(lambda row: f"{row['mean']:0.03f} ({row[0.025]:0.03f}--{row[0.975]:0.03f})", axis=1)
+    formatted.index.names = ["Extractor", "Feature Count", "$\mathrm{CCC}_t$"]
+    with open(util.output_path("tables/top_multivar_performers.txt", write=True), "w") as f:
+        print(formatted.to_frame("Harrel's C-index").reset_index().to_latex(index=False,float_format="%0.02f"), file=f)
+
+
+
+
+    # The full figure.
+    # NOTE: For the feature count CIs, I have computed this based on getting the 0.025 and 0.975 quantiles of the count of selected features
+    # This is basically just to give a sense of where teh number of features stops increasing for each plot. NOTE:
+    # Originally I computed them for every feature set, ccc_threshold, and feature count. Then I realized that feature_count=64 gives all the needed info
+    # (For any of these percentiles, if it is < requested feature count, it is the same for all, so feature_count=64 gives the max possible)
+    featsel = pandas.read_csv('data/working/multivariate_survival/features_single.csv', index_col=[0,1,2,3,4])
+    selcounts = featsel.sum(axis=1)
+    featsel = pandas.read_csv('data/working/multivariate_survival/features_all.csv', index_col=[0,1,2,3,4])
+    selcounts = pandas.concat((selcounts, featsel.sum(axis=1)), axis=0)
+    #threshed = selcounts < selcounts.index.get_level_values('feature_count')
+    #thsel = selcounts[threshed]
+    percs = selcounts.groupby(['feature_set', 'ccc_threshold', 'feature_count']).describe(percentiles=[0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.975])#.to_csv("check_feature_counts.csv")
+    ix = pandas.IndexSlice
+    feature_count_cis = percs.loc[ix[:, :, 64], ["2.5%", "97.5%"]]
+    feature_count_cis["97.5%"][feature_count_cis["97.5%"] == 64.0] = 100
+    feature_count_cis["2.5%"][feature_count_cis["2.5%"] == 64.0] = 100
+    feature_count_cis = feature_count_cis.xs(64, level="feature_count")
+
+    fig, axsouter = figs.make_fig(2, 3, nrow=9, ncol=5, sharex=True, sharey=True)
+
+    sets=set_order
+
+    outer_loop='feature_set'
+    xaxis='feature_count'
+    feature_counts = [1, 2, 4, 8, 16, 32, 64]
+
+    for ixx, st in enumerate(sets):
+        tab = outer.xs(st, level=outer_loop)
+        itab = inner_mns.xs(st, level=outer_loop).copy()
+        axs = axsouter[ixx]
+        #fig, axs = pyplot.subplots(1,5, figsize=(20,4), sharey=True)
+
+        tab = tab.drop(columns=['score_type'])
+        tab = tab.xs(-1, level='cv_fold')
+        tab['type'] = 'test'
+        itab['type'] = 'train'
+        itab = itab.rename(columns=dict(train='c-index', test='none'))
+        tab = tab.rename(columns=dict(train='none', test='c-index'))
+        newtab = pandas.concat((tab, itab), axis='rows')
+
+        for (name, tab), ax in zip(newtab.groupby('ccc_threshold'), axs):
+            sns.pointplot(tab, x=xaxis, y='c-index', hue='type', linestyles=['solid', 'dashed'], errorbar='pi', estimator='mean', ax=ax, native_scale=True, legend=False)
+            ax.semilogx(base=2)
+            ci = feature_count_cis.loc[(st, name)]
+            lower, upper = ci['2.5%'], ci['97.5%']
+            xr, yr = ax.get_xlim(), ax.get_ylim()
+
+            y = [0, 1]
+            x1 = [lower, lower]
+            x2 = [upper, upper]
+            color=[0.1, 0.1, 0.1, 0.1]
+            ax.fill_betweenx(y, x1, x2, color=color)
+            ax.set_xlim(xr)
+            ax.set_ylim(yr)
+            ax.set_ylim((0.48, 0.77))
+
+            #ax.set_xscale('log', base=2)
+            #ax.set_title(f"{st}, {name}")
+            ax.set_xticks(feature_counts)
+            #ax.legend(handlelength=3)
+            from matplotlib.ticker import StrMethodFormatter
+            ax.xaxis.set_major_formatter(StrMethodFormatter("{x:0.0f}"))
+            if name == 0.0:
+                ax.set_ylabel(f"{st}\nC-index")
+            if ixx == 0:
+                ax.set_title(f"$\mathrm{{CCC}} \geq {name:0.02f}$")
+            if ixx == 8:
+                ax.set_xlabel("Feature Count")
+
+        [ax.grid(visible=True) for ax in axs]
+
+    fig.savefig(util.output_path("figs/multivariate_full_summary.pdf", write=True))
+
+    figs.set_dpi(72)
+    pyplot.show()
+    
 
 
 
