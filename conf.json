@@ -46,5 +46,12 @@
             {"ccc_threshold": 0.9},
             {"ccc_threshold": 0.95}
         ]
+    },
+    "feature_visualization": {
+        "tcia_root": "F:\\SimpsonLab\\r01_aim2\\unsure2023_melba_se",
+        "repro_dataset_file": "repro_image_dataset.json",
+        "surv_dataset_file": "surv_image_dataset.json",
+        "selection_file": "feature_visualization_choices.json"
+
     }
 }

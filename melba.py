@@ -487,18 +487,21 @@ def drop_diagnostics(features):
     to_drop = fnmatch.filter(features.columns, "*diagnostic*")
     return features.drop(columns=to_drop)
 
-def load_repro_table(fname):
+def load_repro_table(fname, keep_diag=False):
     """Load feature file from reproducibility data set"""
     tab = pandas.read_csv(fname, index_col=0)
-    tab = drop_diagnostics(tab)
+    if not keep_diag:
+        tab = drop_diagnostics(tab)
     tab = expand_repro_index(tab)
+
 
     return tab
 
-def load_survival_table(fname):
+def load_survival_table(fname, keep_diag=False):
     """Load feature file for survival data set (TCIA)."""
     tab = pandas.read_csv(fname, index_col=0)
-    tab = drop_diagnostics(tab)
+    if not keep_diag:
+        tab = drop_diagnostics(tab)
     return tab
 
 
@@ -1785,6 +1788,47 @@ def generate_feature_visualizations(args):
     plot_choice(lhchoice)
     plot_choice(llchoice)
 
+    pyplot.show()
+
+
+import ast
+@entry.point
+def image_spacing_histograms(args):
+    util = Utils.from_file(args.conf)
+    
+    repro_tab_file = util.data_path(util.conf['repro_tables']['L2i'])
+    surv_tab_file = util.data_path(util.conf['survival_tables']['L2i'])
+
+    repro_tab = load_repro_table(repro_tab_file, keep_diag=True)
+    surv_tab = load_survival_table(surv_tab_file, keep_diag=True)
+
+    spacing_col = "liver_diagnostics_Image-original_Spacing"
+    def get_spac_dim(tab, col, dim):
+        return tab[col].map(lambda s: ast.literal_eval(s)[dim])
+
+    repro_px = get_spac_dim(repro_tab, spacing_col, 0)
+    repro_px = repro_px.xs((5, 20), level=("spacing", "asir"))
+    surv_slice = get_spac_dim(surv_tab, spacing_col, 2)
+
+    def make_plot(vals, ax):
+        sns.histplot(vals, ax=ax)
+
+    fig_set = FigSet()
+    fig, ax = fig_set.make_fig(1, 1)
+    make_plot(repro_px, ax)
+    ax.set_xlabel("Pixel Spacing (mm)")
+    ax.set_ylabel("Count")
+    ax.grid(axis='y')
+    fig.savefig(util.output_path("figs/repro_pixel_spacing_hist.pdf"))
+
+    fig, ax = fig_set.make_fig(1, 1)
+    make_plot(surv_slice, ax)
+    ax.set_xlabel("Slice Thickness (mm)")
+    ax.set_ylabel("Count")
+    ax.grid(axis='y')
+    fig.savefig(util.output_path("figs/surv_slice_thickness_hist.pdf"))
+    
+    fig_set.set_dpi(72)
     pyplot.show()
 
 
