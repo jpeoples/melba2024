@@ -431,7 +431,7 @@ def value_filter(features):
     
     This is implemented to automatically detect and drop features like
     firstorder_Minimum, which because we are applying resegmentation to
-    [0,300], is almost always 0 (at least in the liver parenchyma). This
+    [-50,350], is almost always -50 (at least in the liver parenchyma). This
     doesn't play well with mRMR selection, which appears to frequently 
     select such features, even when they are not informative.
     """
