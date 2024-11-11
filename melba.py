@@ -30,6 +30,15 @@ from lifelines.utils import concordance_index
 
 from entrypoints import EntryPoints
 
+# This is a handy object for creating scripts with multiple entry points that we call by name like
+# python melba.py <entrypoint_name>
+#
+# These are created with this object by a decorator method
+#
+# @entry.point
+# def entrypoint_name(args):
+#     # code
+
 entry = EntryPoints()
 
 class Utils:
@@ -43,6 +52,7 @@ class Utils:
             return cls(obj)
 
     def r_run(self, script, args):
+        """Run an R script"""
         rpath = self.conf['r_path']
         scriptpath = self.conf['r_scripts'][script]
         arg_string = " ".join(args)
@@ -50,6 +60,7 @@ class Utils:
         os.system(f'"{rpath}" {scriptpath} {arg_string}')
 
     def data_path(self, path, prefix=None, external=False, write=False):
+        """Helper function for paths in data folder"""
         if external:
             fullpath=external
         else:
@@ -66,6 +77,7 @@ class Utils:
 
     @staticmethod
     def ensure_dir(fpath):
+        """Ensure the parent directory of the specified path already exists"""
         dir = os.path.dirname(fpath)
         if not os.path.exists(dir):
             os.makedirs(dir)
@@ -73,15 +85,19 @@ class Utils:
         return fpath
 
     def input_path(self, path):
+        """Get a file from the input data directory"""
         return self.data_path(path, prefix='input')
 
     def working_path(self, path, write=False):
+        """Get a file from the working data directory"""
         return self.data_path(path, prefix="working", write=write)
 
     def output_path(self, path, write=False):
+        """Get a file from the output data directory"""
         return self.data_path(path, prefix="output", write=write)
 
     def load_repro_tables(self):
+        """Load the repro tables for all extractors"""
         tables = {k: load_repro_table(self.data_path(p)) for k, p in self.conf['repro_tables'].items()}
         cat = []
         for ext, tab in tables.items():
@@ -93,12 +109,14 @@ class Utils:
         return pandas.concat(cat, axis=0)
 
     def load_survival_table(self, feature_set):
+        """Load survival table for a requested extractor"""
         assert feature_set in self.conf['survival_tables']
         p = self.data_path(self.conf['survival_tables'][feature_set])
         return load_survival_table(p)
 
 
     def load_survival_tables(self):
+        """Load survival tables for all extractors"""
         tables = {k: load_survival_table(self.data_path(p)) for k, p in self.conf['survival_tables'].items()}
         cat = []
         for ext, tab in tables.items():
@@ -112,10 +130,12 @@ class Utils:
         return pandas.concat(cat, axis=0)
 
     def load_survival_clin_table(self):
+        """Load the clinical data for survival analysis"""
         table = pandas.read_csv(self.data_path(self.conf['survival_data']), index_col=0)
         return table
 
     def univariate_survival_outcome(self):
+        """Get the survival event and time columns only for univariate analysis"""
         tab = self.load_survival_clin_table()
         conf = self.conf['univariate_survival']
         time = conf['time']
@@ -124,6 +144,7 @@ class Utils:
         return pandas.DataFrame({"time": tab[time], "event": tab[event]})
 
     def multivariate_survival_outcome(self):
+        """Get the survival event and time columns only for multiivariate analysis"""
         tab = self.load_survival_clin_table()
         conf = self.conf['multivariate_survival']
         time = conf['time']
@@ -131,17 +152,19 @@ class Utils:
 
         return pandas.DataFrame({"time": tab[time], "event": tab[event]})
 
-    # Deterministic function to get the nth seed
     def get_seed(self, repeat):
+        """Deterministic function to get the nth seed"""
         seed = self.conf['multivariate_survival']['seed_generator_seed']
         rng = numpy.random.RandomState(seed)
         return rng.randint(2**31, size=(repeat+1,))[-1]
 
     def get_random_state(self, repeat):
+        """Get a random state object from nth seed"""
         seed = self.get_seed(repeat)
         return numpy.random.RandomState(seed)
 
     def multivariate_survival_features(self, args):
+        """Load features for multivariable survival modeling"""
         fs = self.conf['multivariate_survival']['feature_sets'][args.feature_set]
         if fs == 'all':
             features = self.load_survival_tables()
@@ -152,6 +175,13 @@ class Utils:
         return features
 
     def multivariate_feature_selector(self, args):
+        """Prepare feature selector for multivariable survival.
+        
+        This works with the supplied command line args for the model.
+
+        As needed, it prepares the model to threshold based on CCC, apply the
+        univariate thresholding based on C-index and p-value, and then run mRMR.
+        """
         def cccs_for_feature_set(args):
             fs = self.conf['multivariate_survival']['feature_sets'][args.feature_set]
             cccs = pandas.read_csv(self.working_path('lmm_cccs.csv'), index_col=[0,1])
@@ -164,15 +194,6 @@ class Utils:
 
             return cccs
 
-        #cccs = cccs_for_feature_set(args)
-        #thresh = self.conf['multivariate_survival']['ccc_threshold']
-        #thresh_keep = cccs >= thresh
-        #thresh_keep = cccs.index[thresh_keep]
-        #constructors = {
-        #    "mRMR": lambda n: mRMRFeatSel(n, None),
-        #    "mRMRReproThresh": lambda n: ReproFeatSel(n, thresh_keep),
-        #    "mRMRReproWeighted": lambda n: mRMRFeatSel(n, cccs)
-        #}
         
         fs_conf = self.conf['multivariate_survival']['feature_selection'][args.feature_selection]
         if "ccc_threshold" in fs_conf:
@@ -191,11 +212,13 @@ class Utils:
         return lambda n: FeatureSelectorChain(list(selectors)+[mRMRFeatSel(n, None)])
 
     def multivariate_survival_model(self, args):
+        """Prepare the modeling object for multivariable survival analysis"""
         nfeat = self.conf['multivariate_survival']['feature_counts'][args.feature_count]
         fsel_constructor = self.multivariate_feature_selector(args)
         return MultivariateSurvival(nfeat, fsel_constructor)
 
     def multivariate_cross_validation(self, args, repeat):
+        """Prepare the cross-validation object for multivariable analysis"""
         nfolds = self.conf['multivariate_survival']['cv_n_fold']
         repeats = self.conf['multivariate_survival']['cv_repeats']
         assert repeat <= repeats
@@ -218,6 +241,7 @@ class Utils:
 
 
 def blast_out_extractors(tab):
+    """Convert the long format with extractor in index, to a wide format with separate columns for each extractor/feature combination"""
     out = []
     for ext, tab in tab.groupby('extractor'):
         tab = tab.loc[ext]
@@ -227,6 +251,7 @@ def blast_out_extractors(tab):
     return pandas.concat(out, axis=1)
 
 class CrossValidation:
+    """Cross validation wrapper that works with y as a survival table (with columns 'time' and 'event')"""
     def __init__(self, cv):
         self.cv = cv
 
@@ -237,9 +262,8 @@ class CrossValidation:
     def get_n_splits(self, X, y, groups=None):
         return self.cv.get_n_splits(X, y, groups)
 
-
-
 class Normalizer:
+    """Threshold low-variance features and convert to z-scores."""
     def compute_normalization(self, X):
         self.threshold_ = VarianceThreshold()
         X = self.threshold_.fit_transform(X)
@@ -251,6 +275,12 @@ class Normalizer:
         return Xout
 
 def surv_rel(X, y, feature_prefs=None):
+    """A relevance score for survival data, always between 0.5 and 1.
+    
+    Based on Harrell's C-index. Negatively related features (C-index < 0.5)
+    are converted to positive by converting the C-index to Somer's D (ranging from -1 to 1),
+    then taking the absolute value, and converting back to Harrell's C.
+    """
     ci = compute_harrels_per_features(X, y)
     dxy = 2 * ci - 1
     adxy = dxy.abs()
@@ -312,14 +342,6 @@ class FeatureSelectorChain:
     def get_selected(self, X):
         return X.loc[:, self.selected_]
 
-def feature_agglom_by_thresh(features, thresh):
-    from sklearn.cluster import FeatureAgglomeration
-    #print("...clustering")
-    corr = features.corr(method='spearman').abs()
-    cl = FeatureAgglomeration(distance_threshold=1-thresh, n_clusters=None, metric='precomputed', linkage='single')
-    cl.fit(1-corr)
-
-    return pandas.Series({ix: cli for ix, cli in zip(features.columns, cl.labels_)})
 def univar_cox(surv, ft):
     from lifelines.exceptions import ConvergenceError
     fitter = CoxPHFitter()
@@ -336,60 +358,6 @@ def univar_cox(surv, ft):
 
     return res
 
-def select_best_features_from_clusters(clusters, features, surv):
-    clusters = clusters[features.columns.intersection(clusters.index)]
-    #print("...ranking")
-    #ranking = univar_rank(time_col, event_col, features)
-    #print('...somers')
-    somers = surv_rel(features, surv)
-    #ranking['somers'] = somers
-    #print(ranking[['p-value', 'somers']].corr(method='spearman'))
-    #all_selected = ranking.loc[ranking['p-value'] < 0.05].index
-
-    all_selected = []
-    #print("...sorting through")
-    for cli, cluster_features in clusters.groupby(clusters):
-        cluster_ranks = somers[cluster_features.index]
-        sorted = cluster_ranks.sort_values(ascending=False)
-        for ix, d in sorted.items():
-            if d < 0.1:
-                break
-            res = univar_cox(surv, features[ix])
-            if res['p-value'] < 0.1:
-                all_selected.append(ix)
-                break
-        #best = cluster_ranks.idxmax()
-        #if cluster_ranks[best] > 0.1:
-        #    all_selected.append(best)
-        #cluster_ranks = ranking.loc[cluster_features.index, "p-value"]
-        #selected = cluster_ranks.sort_values()
-        #for ix, pval in selected.items():
-        #    if pval < 0.1: #and cccs.loc[preproc, ix] > 0.9:
-        #        all_selected.append(ix)
-        #        break
-
-    #print("...ordering")
-    selected_ranks = somers.loc[all_selected]
-    order = selected_ranks.sort_values().index
-
-
-    return features.loc[:, order]
-class HierarchicalFeatureSelector:
-    def __init__(self, thresh):
-        self.corr_thresh = thresh
-
-    def select_features(self, X, y):
-        clusters = feature_agglom_by_thresh(X, self.corr_thresh)
-        selfeat = select_best_features_from_clusters(clusters, X, y)
-
-        self.selected_ = selfeat.columns.tolist()
-        print(len(self.selected_), clusters.max()+1)
-
-        return self
-
-    def get_selected(self, ds):
-        return ds.loc[:, self.selected_]
-
 class ListFeatSel:
     def __init__(self, feature_list):
         self.feature_list = feature_list
@@ -400,24 +368,6 @@ class ListFeatSel:
     def get_selected(self, X):
         return X.loc[:, self.selected_]
 
-
-class ReproFeatSel:
-    def __init__(self, nfeat, repro_features):
-        self.repro_features = repro_features
-        self.nfeat = nfeat
-
-
-    def select_features(self, X, y):
-        X = X[self.repro_features]
-        self.mrmr_ = mRMRFeatSel(self.nfeat)
-        self.mrmr_.select_features(X, y)
-
-    def get_selected(self, X):
-        return self.mrmr_.get_selected(X)
-
-
-
-
 def mrmr_surv(
         X, y, K,
         relevance = None, redundancy='c', denominator='mean',
@@ -425,23 +375,12 @@ def mrmr_surv(
         only_same_domain=False, return_scores=False,
         n_jobs=-1, show_progress=True
 ):
-    #rels = relevance(X, y)
-    #X = X.loc[:, rels > 0.55]
-    #to_keep = []
-    #for ft in X.columns:
-    #    res = univar_cox(y, X[ft])
-    #    if res['p-value'] < 0.1:
-    #        to_keep.append(ft)
-
-    #X = X.loc[:, to_keep]
-    #print("Remaining to select", X.shape[1])
-
-    #if relevance is None:
-    #    relevance = surv_rel
+    """Just a wrapper for mrmr_classif, but we pass the right relevance score (mrmr_surv_rel)"""
     return mrmr.mrmr_classif(X, y, K, relevance=relevance, redundancy=redundancy, denominator=denominator, cat_features=cat_features, cat_encoding=cat_encoding, only_same_domain=only_same_domain, return_scores=return_scores, n_jobs=n_jobs, show_progress=show_progress)
 
 
 class MultivariateSurvival(BaseEstimator):
+    """Multi-variable survival model implementation."""
     def __init__(self, nfeat=10, feat_sel=mRMRFeatSel):
         self.nfeat = nfeat
         self.feat_sel = feat_sel
@@ -487,9 +426,15 @@ class MultivariateSurvival(BaseEstimator):
 
         return concordance_index(y['time'], pred, y['event'])
 
-
-
-def value_filter(features, count=10):
+def value_filter(features):
+    """Remove a column if more than 50% of rows are equal.
+    
+    This is implemented to automatically detect and drop features like
+    firstorder_Minimum, which because we are applying resegmentation to
+    [0,300], is almost always 0 (at least in the liver parenchyma). This
+    doesn't play well with mRMR selection, which appears to frequently 
+    select such features, even when they are not informative.
+    """
     def cntr(x):
         counts = x.value_counts()
         counts = counts / counts.sum()
@@ -506,6 +451,7 @@ def cmpxs(tab, a):
 
     
 def concordance_correlation_coefficient(y_true, y_pred):
+    """Lee's concordance correlation coefficient"""
     np = numpy
     cov = np.cov(y_true, y_pred, ddof=0)
     mean_true=np.mean(y_true)
@@ -518,6 +464,7 @@ def concordance_correlation_coefficient(y_true, y_pred):
     return 2 * covar / (var_true + var_pred + (mean_true-mean_pred)**2)
 
 def parse_repro_caseid(caseid):
+    """Extract patient, timepoint, slice thickness and asir from case id"""
     spl = caseid.split("_")
     asir = int(spl[-1])
     slice_thickness = int(spl[-2])/100
@@ -527,6 +474,7 @@ def parse_repro_caseid(caseid):
     return subject, timepoint, slice_thickness, asir
 
 def expand_repro_index(features):
+    """Parse case ids in index to a structured multiindex"""
     findex = features.index
     findex = [parse_repro_caseid(id) for id in findex]
     findex = pandas.MultiIndex.from_tuples(findex)
@@ -535,37 +483,22 @@ def expand_repro_index(features):
     return features
 
 def drop_diagnostics(features):
+    """Drop diagnostic columns from pyRadiomics csv files"""
     to_drop = fnmatch.filter(features.columns, "*diagnostic*")
     return features.drop(columns=to_drop)
 
-def unnormalized_features():
-    features_to_drop = ['original_firstorder_Energy', 'original_gldm_DependenceNonUniformity',
-       'original_gldm_GrayLevelNonUniformity', 'original_ngtdm_Busyness',
-       'original_ngtdm_Coarseness', 'original_ngtdm_Strength',
-       'original_glrlm_GrayLevelNonUniformity',
-       'original_glrlm_RunLengthNonUniformity',
-       'original_glszm_GrayLevelNonUniformity',
-       'original_glszm_SizeZoneNonUniformity']
-
-    features_to_drop = [aft for ft in features_to_drop for aft in ["liver_"+ft, "tumor_"+ft]]
-    return features_to_drop
-
-def drop_unnormalized(tab):
-    features_to_drop = unnormalized_features()
-    return tab.drop(columns=features_to_drop)    
-
 def load_repro_table(fname):
+    """Load feature file from reproducibility data set"""
     tab = pandas.read_csv(fname, index_col=0)
     tab = drop_diagnostics(tab)
-    #tab = drop_unnormalized(tab)
     tab = expand_repro_index(tab)
 
     return tab
 
 def load_survival_table(fname):
+    """Load feature file for survival data set (TCIA)."""
     tab = pandas.read_csv(fname, index_col=0)
     tab = drop_diagnostics(tab)
-    #tab = drop_unnormalized(tab)
     return tab
 
 
@@ -573,7 +506,9 @@ def load_survival_table(fname):
 def common_parser(parser):
     parser.add_argument("--conf", required=False, default="conf.json")
 
+
 def compute_pairwise_ccs(a, b):
+    """Compute Lee's CCC for every column across two tables"""
     cols = a.columns
     assert cols.equals(b.columns)
     results = {}
@@ -712,6 +647,7 @@ def pairwise_fixed_asir_plot(util, cccs, figset):
     hue_order = ['5.0 vs. 3.75', '3.75 vs. 2.5', '5.0 vs. 2.5']
     xorder = list(reversed(cccs.xs(5.0, level='reference_thickness').xs(3.75, level='comparison_thickness').groupby('extractor')['ccc'].mean().sort_values().index))
     print(xorder)
+    xorder = HUE_ORDER
     sns.boxplot(cccs, x='extractor', y='ccc', hue=hue, order=xorder, hue_order=hue_order)
     ax.legend(loc='lower left')
     ax.set_xticks([])
@@ -875,6 +811,141 @@ def cluster_figs(args):
 
     pyplot.show()
 
+def zero_counts(extractors, rois):
+    ix = pandas.MultiIndex.from_tuples([(ex, roi) for ex in extractors for roi in rois], names=["extractor", "roi"])
+    return pandas.Series(0, index=ix)
+
+HUE_ORDER = ["L2i", "S2i", "A2", "L2", "S2", "A3", "L3", "S3"]
+def plot_top_rank_counts(table, ax=None, col="ccc", hue_order=HUE_ORDER):
+    table = table.copy()
+    table['rank'] = table.groupby('feature')[col].rank(ascending=True, method='max')#.groupby(['extractor')['ccc'].mean().sort_values()
+    zeros = zero_counts(hue_order, ["tumor", "liver"])
+    tab = table.groupby(["extractor", "roi"])["rank"].value_counts().xs(len(hue_order), level='rank')
+    zeros.update(tab)
+    tab = zeros.to_frame("count").loc[hue_order]
+    sns.barplot(tab, x="extractor", y="count", hue="extractor", hue_order=hue_order, errorbar=('pi', 100), ax=ax)
+    sns.pointplot(tab, x="extractor", y="count", hue="roi", hue_order=['tumor', 'liver'], dodge=0.3, linestyle='none', color='k', markers=['4', '3'], ax=ax)
+
+def pareto_front(tab, a, b):
+    acol = tab[a]
+    bcol = tab[b]
+
+    front = []
+    for ix, row in tab.iterrows():
+        av = row[a]
+        bv = row[b]
+
+        amask = acol >= av
+        bmask = bcol >= bv
+        emask = (acol == av) & (bcol == bv)
+
+        com_mask = amask & bmask
+        if com_mask.sum() == 1:
+            front.append(ix)
+        else:
+            if (com_mask).equals(emask):
+                front.append(ix)
+
+    return front
+
+@entry.point
+def pareto_figs(args):
+    util = Utils.from_file(args.conf)
+
+    cccs = pandas.read_csv(util.working_path('lmm_cccs.csv'), index_col=[0,1])
+    cis = pandas.read_csv(util.working_path('survival/univariate_c-indices.csv'), index_col=[0,1])
+
+    figs = FigSet()
+
+    fig_a, axs = figs.make_fig(1, 2, 2, 2, sharex=True, sharey=False)
+
+    all_data = cccs.join(cis, how='inner', rsuffix='_cis')
+
+    plot_top_rank_counts(all_data, ax=axs[0,0], col="ccc")
+    axs[0,0].set_title("Highest CCC")
+    axs[0,0].legend()
+    #fig.savefig(util.output_path("figs/pareto_ccc_winner.pdf", write=True))
+
+    #fig, ax = figs.make_fig(0.5, 1)
+    plot_top_rank_counts(all_data, ax=axs[0,1], col="abs_c-index")
+
+    axs[0,1].set_title("Highest C-index")
+    axs[0,1].legend()
+    #fig.savefig(util.output_path("figs/pareto_ci_winner.pdf", write=True))
+
+
+    pareto_inds = pareto_front(all_data, 'abs_c-index', 'ccc')
+    all_data['pareto'] = 'non-pareto'
+    all_data.loc[pareto_inds, 'pareto'] = 'pareto'
+    pareto = all_data.loc[pareto_inds]
+
+    fig, ax = figs.make_fig(1, 2)
+    hue_order = HUE_ORDER
+    style_order = ["tumor", "liver"]
+    sns.scatterplot(all_data, x='abs_c-index', y = 'ccc', hue='extractor', hue_order=hue_order, style='roi', style_order=style_order, markers=["4", "3"], alpha=0.4, linewidths=2.5, legend=False, s=100) #style='pareto', style_order=['non-pareto', 'pareto'])
+    sns.scatterplot(pareto.reset_index().rename(columns={"extractor": "Extractor", "roi": "ROI"}), x='abs_c-index', y = 'ccc', hue='Extractor', legend=True, hue_order=hue_order, style='ROI', style_order=style_order, markers=["4", "3"], linewidths=2.5, s=100) #style='pareto', style_order=['non-pareto', 'pareto'])
+    sns.scatterplot(pareto, x='abs_c-index', y='ccc', markers="o", facecolors="none", edgecolors="r", s=150, linewidths=2)
+    ax.set_xlabel("C-index")
+    ax.set_ylabel("CCC")
+    fig.savefig(util.output_path("figs/pareto_front.pdf", write=True))
+
+
+    #fig, ax = figs.make_fig(0.5, 1)
+    zeros = zero_counts(hue_order, ["tumor", "liver"])
+    counts = pareto.value_counts(["extractor", 'roi'])
+    zeros.update(counts)
+    counts = zeros
+    counts = counts.to_frame("count").loc[hue_order]
+    sns.barplot(counts, x="extractor", y="count", hue="extractor", hue_order=hue_order, ax=axs[1,1])
+    sns.pointplot(counts, x="extractor", y="count", hue="roi", hue_order=['tumor', 'liver'], dodge=0.3, linestyle='none', color='k', markers=['4', '3'], ax=axs[1,1])
+    axs[1,1].legend()
+    axs[1,1].set_title("Pareto Front")
+    axs[1,1].set_yticks([0, 1, 2, 3, 4])
+    #fig.savefig(util.output_path("figs/pareto_overall_count.pdf", write=True))
+
+
+    #fig, ax = figs.make_fig(0.5, 1)
+    import collections
+    counts = zero_counts(hue_order, ['tumor', 'liver'])
+    for ft, data in all_data.groupby("feature"):
+        pf = pareto_front(data, 'ccc', 'abs_c-index')
+        for ex, f in pf:
+            roi = f.split("_")[0]
+            counts[(ex, roi)] += 1
+    countt = pandas.Series(counts, name="count")
+    countt.index.names = ["extractor", 'roi']
+    countt = countt.to_frame('count').loc[hue_order]
+    sns.barplot(countt, x='extractor', y='count', hue="extractor", hue_order=hue_order, ax=axs[1,0])
+    sns.pointplot(countt, x="extractor", y="count", hue="roi", hue_order=['tumor', 'liver'], dodge=0.3, linestyle='none', color='k', markers=['4', '3'], ax=axs[1,0])
+    axs[1,0].set_title("Per-feature Pareto Front")
+    axs[1,0].legend()
+
+    [ax.set_ylabel("Feature Count") for ax in axs.flatten()]
+    [ax.set_xlabel("Extractor") for ax in axs.flatten()]
+    [ax.grid(axis='y') for ax in axs.flatten()]
+    fig_a.savefig(util.output_path("figs/pareto_extractor_breakdown.pdf", write=True))
+
+    figs.set_dpi(72)
+    pyplot.show()
+
+
+    print_cols = ["roi", "feature_family", "feature_name", "ccc", "abs_c-index"]
+    renamer = {"ccc": "CCC", "abs_c-index": "C-index", "feature_family": "Class", "feature_name": "Name", "roi": "ROI", "extractor": "Extractor"}
+    print_ready = pareto.loc[[h for h in hue_order if h in pareto.index.get_level_values("extractor")], print_cols].reset_index().drop(columns=["feature"]).rename(columns=renamer)
+    print_ready["Name"] = print_ready["Name"].map(lambda s: s.split("_")[-1])
+    class_mapper = dict(firstorder="First order", glcm="GLCM", gldm="GLDM", glszm="GLSZM", glrlm="GLRLM", ngtdm="NGTDM")
+    print_ready["Class"] = print_ready["Class"].map(class_mapper)
+    roimapper = dict(liver="Liver", tumor="Tumor")
+    print_ready["ROI"] = print_ready["ROI"].map(roimapper)
+
+    print(print_ready)
+    print(print_ready.set_index(["Extractor", "ROI"], drop=True).to_latex(index=True, sparsify=True, longtable=False, float_format="{:0.4f}".format))
+    with open(util.output_path("tables/pareto_features.txt", write=True), "w") as f:
+        print(print_ready.set_index(["Extractor", "ROI"], drop=True).to_latex(index=True, sparsify=True, longtable=False, float_format="{:0.4f}".format), file=f)
+
+
+
+
 @entry.point
 def multivariate_survival(args):
     from joblib import Parallel, delayed
@@ -1037,7 +1108,7 @@ def multivariate_figs(args):
 
     
     # NOTE: This ordering comes from the clustering ordering (plus all at the front)
-    set_order = ["all", "L2i", "S2i", "L2", "S2", "A2", "L3", "S3", "A3"]
+    set_order = ["all"] + HUE_ORDER
 
     tab = outer.xs(count, level='feature_count').copy()
     itab = inner_mns.xs(count, level='feature_count')
@@ -1078,10 +1149,66 @@ def multivariate_figs(args):
     top_index = top_means.index
     tops = top_means.join(cis, how='left')
 
+
+    # Load the feature selection counts
+    path = util.working_path("multivariate_survival/roi_feature_counts.csv")
+    if os.path.exists(path):
+        selected_features = pandas.read_csv(path, index_col=[0,1,2,3,4])
+    else:
+    # NExt we load the feature selection data and compute some summary statistics
+        features_all = pandas.read_csv(util.working_path("multivariate_survival/features_all.csv"), index_col=[0,1,2,3,4])
+        features_single = pandas.read_csv(util.working_path("multivariate_survival/features_single.csv"), index_col=[0,1,2,3,4])
+
+        unique_features = sorted(set(features_all.columns) | set(features_single.columns))
+        rows = []
+        for feat in unique_features:
+            roi = 'liver' if 'liver' in feat else 'tumor'
+            row = dict(feature=feat, liver=roi=='liver', tumor=roi=='tumor')
+            rows.append(row)
+        feature_data_table = pandas.DataFrame(rows).set_index('feature')
+        feature_data_table_all = feature_data_table.loc[features_all.columns]
+        feature_data_table_single = feature_data_table.loc[features_single.columns]
+
+        def selected_features(row, table):
+            tab = table.loc[row==1]
+            return tab.sum()
+            
+
+        def selected_features_all(row):
+            return selected_features(row, feature_data_table_all)
+
+        def selected_features_single(row):
+            return selected_features(row, feature_data_table_single)
+        print("Tabulating selected featuers all")
+        selected_features_all = features_all.apply(selected_features_all, axis=1)
+        print("Tabulating selected featuers single")
+        selected_features_single = features_single.apply(selected_features_single, axis=1)
+        selected_features = pandas.concat((selected_features_all, selected_features_single), axis=0)
+        selected_features.to_csv(path, index=True)
+
+    total_selected = selected_features['liver'] + selected_features['tumor']
+    norm_selected = selected_features.apply(lambda x: x / total_selected)
+    mean_counts = norm_selected.groupby(["feature_set", "feature_count", "ccc_threshold"]).mean()
+
+    long_counts = mean_counts.reset_index(drop=False).melt(id_vars=["feature_set", "feature_count", "ccc_threshold"], value_vars=['liver', 'tumor'], var_name='roi', value_name='count')
+    long_counts = long_counts.loc[long_counts['roi']=='liver']
+    #pivot = pandas.pivot_table(long_counts, index=['feature_set'], columns=['ccc_threshold', 'feature_count'], values='count')
+    #print(pivot)
+
+
+    top_indices = list(tops.index.to_flat_index())
+    perc_features_drawn_from_liver = long_counts.set_index(["feature_set", "feature_count", "ccc_threshold"]).loc[top_indices, "count"]
+    print(perc_features_drawn_from_liver)
+
+
     formatted = tops.apply(lambda row: f"{row['mean']:0.03f} ({row[0.025]:0.03f}--{row[0.975]:0.03f})", axis=1)
     formatted.index.names = ["Extractor", "Feature Count", "$\mathrm{CCC}_t$"]
+    formatted = formatted.to_frame("Harrel's C-index")
+    perc_features_drawn_from_liver.index.names = formatted.index.names
+    formatted["Prop. Liver Features"] = perc_features_drawn_from_liver
     with open(util.output_path("tables/top_multivar_performers.txt", write=True), "w") as f:
-        print(formatted.to_frame("Harrel's C-index").reset_index().to_latex(index=False,float_format="%0.02f"), file=f)
+        print(formatted.reset_index().to_latex(index=False,float_format="%0.02f"), file=f)
+
 
 
 
@@ -1162,27 +1289,506 @@ def multivariate_figs(args):
     figs.set_dpi(72)
     pyplot.show()
     
+@entry.point
+def generate_additional_tables(args):
+    util = Utils.from_file(args.conf)
+
+    features = util.load_repro_tables()
+
+    def class_and_name(x):
+        spl = x.split("_")
+        name = spl[-1]
+        klass = spl[-2]
+        return klass, name
+    all_features = pandas.DataFrame(sorted(set(features.columns.map(class_and_name))), columns=["Feature Class", "Name"])
+    assert all_features.shape[0] == 93
+
+    names = dict(
+        firstorder = "First order",
+        glcm="GLCM",
+        ngtdm="NGTDM",
+        gldm="GLDM",
+        glrlm="GLRLM",
+        glszm="GLSZM"
+    )
+    all_features["Feature Class"] = all_features["Feature Class"].map(names)
+    
+    # Generate the counts
+    print_ready = all_features.groupby("Feature Class").count().loc[list(names.values())].reset_index().rename(columns={"Name": "Count"})
+    grand_total = pandas.DataFrame({"Feature Class": ["Total"], "Count": [print_ready["Count"].sum()]})
+    styler = print_ready.style.concat(grand_total.style.set_properties(**{"font-weight": "bold"}))
+    print(styler.hide(axis='index').to_latex(convert_css=True, hrules=True))
+    with open(util.output_path("tables/feature_counts_by_class.txt", write=True), "w") as f:
+        print(styler.to_latex(convert_css=True, hrules=True), file=f)
+
+    # Generate the name lists
+    #max_count = print_ready["Count"].max()
+    #all_features["number"] = all_features.groupby("Feature Class").rank()
+
+    list_table = all_features.set_index(["Feature Class", "Name"])
+    list_table.columns.name = None
+    list_table.index.name = None
+    print(list_table)
+    with open(util.output_path("tables/list_all_features.txt", write=True), "w") as f:
+        print(list_table.to_latex(index=True, sparsify=True, longtable=True, label="tab:feature_list", caption="All features from all feature classes. Detailed feature definitions can be found in the \\texttt{pyradiomics} documentation. \\url{https://pyradiomics.readthedocs.io/en/latest/features.html}"), file=f)
 
 
+@entry.point
+def final_statistics(args):
+    util = Utils.from_file(args.conf)
+    cccs = pandas.read_csv(util.working_path("lmm_cccs.csv"), index_col=0)
+
+    ccc_liver = cccs.loc[cccs['roi']=='liver']
+    ccc_tumor = cccs.loc[cccs['roi']=='tumor']
+
+    ccc_liver = ccc_liver.reset_index(drop=False).set_index(["extractor", "feature_name"])
+    ccc_tumor = ccc_tumor.reset_index(drop=False).set_index(["extractor", "feature_name"])
+
+    shared_index = ccc_liver.index.intersection(ccc_tumor.index)
+    print(ccc_liver.shape[0], ccc_tumor.shape[0], len(shared_index))
+    ccc_liver = ccc_liver.loc[shared_index]
+    ccc_tumor = ccc_tumor.loc[shared_index]
+    
+    results = {}
+    for ext, ltab in ccc_liver.groupby("extractor"):
+        ttab = ccc_tumor.loc[ext]
+        diffs = ltab['ccc'] - ttab['ccc']
+        med_dif = diffs.median()
+        med_l = ltab['ccc'].median()
+        med_t = ttab['ccc'].median()
+        sr_result = wilcoxon(ltab['ccc'].to_numpy(), ttab['ccc'].to_numpy(), alternative='less')
+        results[ext] = dict(p=sr_result.pvalue, med_diff=med_dif, med_liver=med_l, med_tumor = med_t)
+
+    results = pandas.DataFrame.from_dict(results, orient='index')
+    print(results)
+    results = results['p']
+
+    print(f"p-value range for liver ccc < tumor ccc: [{results.min()}, {results.max()}]")
 
 
+    path = util.working_path("multivariate_survival/roi_feature_counts.csv")
+    if os.path.exists(path):
+        selected_features = pandas.read_csv(path, index_col=[0,1,2,3,4])
+    else:
+    # NExt we load the feature selection data and compute some summary statistics
+        features_all = pandas.read_csv(util.working_path("multivariate_survival/features_all.csv"), index_col=[0,1,2,3,4])
+        features_single = pandas.read_csv(util.working_path("multivariate_survival/features_single.csv"), index_col=[0,1,2,3,4])
 
-        
+        unique_features = sorted(set(features_all.columns) | set(features_single.columns))
+        rows = []
+        for feat in unique_features:
+            roi = 'liver' if 'liver' in feat else 'tumor'
+            row = dict(feature=feat, liver=roi=='liver', tumor=roi=='tumor')
+            rows.append(row)
+        feature_data_table = pandas.DataFrame(rows).set_index('feature')
+        feature_data_table_all = feature_data_table.loc[features_all.columns]
+        feature_data_table_single = feature_data_table.loc[features_single.columns]
 
+        def selected_features(row, table):
+            tab = table.loc[row==1]
+            return tab.sum()
+            
 
+        def selected_features_all(row):
+            return selected_features(row, feature_data_table_all)
 
+        def selected_features_single(row):
+            return selected_features(row, feature_data_table_single)
+        print("Tabulating selected featuers all")
+        selected_features_all = features_all.apply(selected_features_all, axis=1)
+        print("Tabulating selected featuers single")
+        selected_features_single = features_single.apply(selected_features_single, axis=1)
+        selected_features = pandas.concat((selected_features_all, selected_features_single), axis=0)
+        selected_features.to_csv(path, index=True)
 
-        
+    total_selected = selected_features['liver'] + selected_features['tumor']
+    norm_selected = selected_features.apply(lambda x: x / total_selected)
+    mean_counts = norm_selected.groupby(["feature_set", "feature_count", "ccc_threshold"]).mean()
 
+    long_counts = mean_counts.reset_index(drop=False).melt(id_vars=["feature_set", "feature_count", "ccc_threshold"], value_vars=['liver', 'tumor'], var_name='roi', value_name='count')
+    long_counts = long_counts.loc[long_counts['roi']=='liver']
+    print(long_counts)
+    #pivot = pandas.pivot_table(long_counts, index=['feature_set'], columns=['ccc_threshold', 'feature_count'], values='count')
+    #print(pivot)
 
+    #sns.heatmap(pivot, vmin=0, vmax=1)
+    #pyplot.show()
+    best_perf_models = [
+        ("L2i", 4, 0),
+        ("all", 4, 0.85)
+    ]
 
-
-
+    perc_features_drawn_from_liver = long_counts.set_index(["feature_set", "feature_count", "ccc_threshold"]).loc[best_perf_models, "count"]
+    print(perc_features_drawn_from_liver)
     
 
 @entry.point
-def reproducibility(args):
+def generate_feature_visualizations(args):
     util = Utils.from_file(args.conf)
+    conf = util.conf['feature_visualization']
+
+    TCIA_ROOT = conf.get("tcia_root")
+
+    import os
+    import json
+    import SimpleITK as sitk
+
+
+
+    with open(conf.get("repro_dataset_file"), "r") as f:
+        repro_dataset = json.load(f)
+
+    with open(conf.get("surv_dataset_file"), "r") as f:
+        surv_dataset = json.load(f)
+
+    def get_components(mask):
+        f = sitk.ConnectedComponentImageFilter()
+        labeled = f.Execute(mask)
+        count = f.GetObjectCount()
+        return count, labeled
+
+    def get_largest_component(mask, l):
+        mask = mask == l
+        count, labeled = get_components(mask)
+        lss = sitk.LabelShapeStatisticsImageFilter()
+        lss.Execute(labeled)
+        assert lss.GetNumberOfLabels() == count
+        maxv = 0
+        biggest = 0
+        for ix in range(1, count+1):
+            v = lss.GetNumberOfPixels(ix)
+            if v > maxv:
+                maxv = v
+                biggest = ix
+
+        info = dict(count=count, labeled_components=labeled, filter=lss, label=biggest)
+        
+        return labeled == biggest, info
+
+    # These functions both return the bbox as a 2xd array, where first row is start,
+    # and second row is end. "End" here is the _last_ value, not the last + 1 like is
+    # usually used for python slicing.
+    def bbox_from_LabelShapeStatisticsImageFilter(filter, label):
+        # LabelShapeStatisticsImageFilter returns the bbox as
+        # [xstart, ystart, ztart, xsize, ysize, zsize]
+        bbx = numpy.array(filter.GetBoundingBox(label))
+        dim = int(len(bbx) / 2)
+        bbx = bbx.reshape((2,dim))
+        bbx[1] = bbx[0] + bbx[1] - 1
+        return bbx
+
+    def bbox_from_LabelStatisticsImageFilter(filter, label):
+        # LabelStatisticsImageFilter returns the bbox as
+        # [xstart, xend, ystart, yend, zstart, zend]
+        bounding_box = numpy.array(filter.GetBoundingBox(label))
+        dim = int(len(bounding_box)/2)
+        return bounding_box.reshape((dim, 2)).transpose()
+
+
+    def bounding_box(mask=None, img=None, filter=None, label=None, im_mode=None):
+        if mask is not None:
+            assert filter is None
+            if img is not None:
+                filter = sitk.LabelStatisticsImageFilter()
+                filter.Execute(img, mask)
+                im_mode = True
+            else:
+                filter = sitk.LabelShapeStatisticsImageFilter()
+                filter.Execute(mask)
+                im_mode = False
+
+        if label is None:
+            label=1
+
+        if im_mode is None:
+            im_mode = isinstance(filter, sitk.LabelStatisticsImageFilter)
+        
+        if im_mode:
+            bbox = bbox_from_LabelStatisticsImageFilter(filter, label)
+        else:
+            bbox = bbox_from_LabelShapeStatisticsImageFilter(filter, label)
+        
+        info = dict(filter=filter, mask=mask, img=img, label=label, im_mode=im_mode)
+        return bbox, info
+
+    def crop(img, pad=0, bb=None):
+        if bb is None:
+            bb, _ = bounding_box(img)
+
+        size = numpy.array(img.GetSize())
+        l=numpy.maximum(bb[0] - pad, 0)
+        u = numpy.minimum(bb[1] + pad + 1, size)
+        if bb.shape[1] == 3:
+            cropped = img[l[0]:u[0], l[1]:u[1], l[2]:u[2]]
+        elif bb.shape[1] == 2:
+            cropped = img[l[0]:u[0], l[1]:u[1]]
+
+        info = dict(bounding_box=bb)
+        return cropped, info
+
+    def load_repro_image(patient, st, asir, msk, padding=10):
+        key = f"{patient}_clinical_{int(st*100)}_{asir:02d}"
+        im = repro_dataset[key]['image']
+        seg = repro_dataset[key]['segmentation']
+
+        rim = sitk.ReadImage(im)
+        rseg = sitk.ReadImage(seg)
+
+        if msk=='liver':
+            rseg = rseg == 1
+            bb, _ = bounding_box(mask=rseg, img=rim)
+        else:
+            rseg, info = get_largest_component(rseg, 2)
+            bb, _ = bounding_box(filter=info['filter'], label=info['label'])
+            
+        rim, _ = crop(rim, bb=bb, pad=padding)
+        rseg, _ = crop(rseg, bb=bb, pad=padding)
+
+        return rim, rseg
+
+    def load_surv_image(patient, roi='liver', padding=10):
+        im = surv_dataset[patient]['image']
+        seg = surv_dataset[patient]['segmentation'][roi]
+
+        rim = sitk.ReadImage(os.path.join(TCIA_ROOT, im))
+        rseg = sitk.ReadImage(os.path.join(TCIA_ROOT, seg))
+        rim, rseg = match_image_and_segmentation(rim, rseg, expand_mask=True)
+
+
+        bb, _ = bounding_box(mask=rseg) # seg is not always same size as im!, img=rim)
+        rim, _ = crop(rim, bb=bb, pad=padding)
+        rseg, _ = crop(rseg, bb=bb, pad=padding)
+        
+        return rim, rseg
+
+    def mod_by_array(img):
+        assert isinstance(img, sitk.Image)
+        arr = sitk.GetArrayFromImage(img)
+
+        def arr2img(arr):
+            imout = sitk.GetImageFromArray(arr)
+            imout.CopyInformation(img)
+            return imout
+        
+        return arr, arr2img
+
+    def im_information_agrees(ima, imb):
+        attribs = (
+            lambda x: x.GetSpacing(),
+            lambda x: x.GetDirection(),
+            lambda x: x.GetOrigin(),
+            lambda x: x.GetSize(),
+        )
+
+        for a in attribs:
+            if not numpy.allclose(a(ima), a(imb)):
+                return False
+
+        return True
+
+    def expand_subsized_segmentation(ct, m):
+        assert numpy.allclose(m.GetDirection(), ct.GetDirection(), atol=1e-3)
+        assert numpy.allclose(m.GetSpacing(), ct.GetSpacing(), atol=1e-3)
+        size = ct.GetSize()
+
+        if ct.GetSize() == m.GetSize(): 
+            # The images already are in same coord system and same number of slices, so we are fine
+            assert numpy.allclose(ct.GetOrigin(), m.GetOrigin())
+            return m
+        
+        # Mask volume is cropped, within CT volume, so we need to create our own image with the same size
+        arr = numpy.zeros(size[::-1], dtype=numpy.uint8)
+        mor = m.GetOrigin()
+        mask_origin_index = ct.TransformPhysicalPointToIndex(mor)
+        mask_bound = numpy.add(mor, numpy.multiply(m.GetSize(), m.GetSpacing()))
+        mask_bound_index = ct.TransformPhysicalPointToIndex(mask_bound)
+        
+        # Copy the loaded mask into the CT.
+        arr[mask_origin_index[2]:mask_bound_index[2], mask_origin_index[1]:mask_bound_index[1], mask_origin_index[0]:mask_bound_index[0]] = sitk.GetArrayViewFromImage(m)
+
+        mout = sitk.GetImageFromArray(arr)
+        mout.CopyInformation(ct)
+        return mout
+
+    def match_image_and_segmentation(img, msk, expand_mask=False):
+        if im_information_agrees(img, msk):
+            return img, msk
+        if not expand_mask:
+            origin = msk.GetOrigin()
+            outer = msk.TransformIndexToPhysicalPoint(msk.GetSize())
+
+            originindex = img.TransformPhysicalPointToIndex(origin)
+            outerindex = img.TransformPhysicalPointToIndex(outer)
+            assert (numpy.array(originindex) > 0).all()
+            assert (numpy.array(outerindex) < img.GetSize()).all()
+            adjusted_bb = numpy.array([originindex, outerindex])
+            return crop(img, bb=adjusted_bb, pad=0), msk
+        else:
+            msk = expand_subsized_segmentation(img, msk)
+            return img, msk
+
+    def apply_segmentation(img, msk, bg=-1000, label=1):
+        if im_information_agrees(img, msk):
+            mskarr = sitk.GetArrayFromImage(msk)
+            imarr, arr2im = mod_by_array(img)
+
+            imarr[mskarr!=label] = bg
+            return arr2im(imarr)
+        else:
+            assert False
+
+
+    def apply_window_level(img, window, level, clamp=False):
+        lower, upper = level - window / 2, level + window / 2
+
+        imarr, arr2im = mod_by_array(img)
+        imarr = (imarr - lower) / (upper - lower)
+        if clamp:
+            imarr[imarr < 0] = 0
+            imarr[imarr > 1] = 1
+
+        return arr2im(imarr)
+
+    LIVER_WINDOW = 400
+    LIVER_LEVEL = 40
+    def prep_vis(im, seg):
+        return apply_segmentation(apply_window_level(im, LIVER_WINDOW, LIVER_LEVEL, clamp=True), seg)
+
+    def center_slice(im):
+        sz = im.GetSize()
+        return int(sz[2] / 2)
+
+    def repro_slices(choices, roi, key='repro_high'):
+        rim5, rseg5 = load_repro_image(choices[key][0], 5, 20, roi)
+        rim3, rseg3 = load_repro_image(choices[key][0], 3.75, 20, roi)
+        rim2, rseg2 = load_repro_image(choices[key][0], 2.5, 20, roi)
+
+        rim5 = prep_vis(rim5, rseg5)
+        rim3 = prep_vis(rim3, rseg3)
+        rim2 = prep_vis(rim2, rseg2)
+
+        s2 = center_slice(rim2)
+        pp = rim2.TransformIndexToPhysicalPoint((0,0,s2))
+        s5 = rim5.TransformPhysicalPointToIndex(pp)[2]
+        s3 = rim3.TransformPhysicalPointToIndex(pp)[2]
+        print(s2, s5, s3)
+
+        rim5 = rim5[:, :, s5]
+        rim3 = rim3[:, :, s3]
+        rim2 = rim2[:, :, s2]
+
+        rim5 = crop_slice(rim5)
+        rim3 = crop_slice(rim3)
+        rim2 = crop_slice(rim2)
+
+        rim5 = sitk.GetArrayFromImage(rim5)
+        rim3 = sitk.GetArrayFromImage(rim3)
+        rim2 = sitk.GetArrayFromImage(rim2)
+
+        return rim5, rim3, rim2
+
+    def crop_slice(im, bg=-1000, pad=10):
+        msk = im > bg
+        bb, _ = bounding_box(msk, img=im)
+        print(bb)
+        im, _ = crop(im, bb=bb, pad=pad)
+        return im
+
+    def surv_slices(ch, roi, key):
+        im, seg = load_surv_image(ch[key][0], roi)
+        im = prep_vis(im, seg)
+        s = center_slice(im)
+        im = im[:, :, s]
+        print("Surv im shape", im.GetSize())
+        im = crop_slice(im)
+        im = sitk.GetArrayFromImage(im)
+        return im
+
+
+    def plot_choice(choices):
+        ext, feat = choices['feature']
+        roi = feat.split("_")[0]
+        ccc = choices['ccc']
+        c_index = choices['c_index']
+        print(roi)
+        print(choices)
+        rim5, rim3, rim2 = repro_slices(choices, roi, 'repro_high')
+        rim5l, rim3l, rim2l = repro_slices(choices, roi, 'repro_low')
+        sim = surv_slices(choices, roi, 'surv_high')
+        siml = surv_slices(choices, roi, 'surv_low')
+
+        from matplotlib import pyplot
+
+        fig, axarr = pyplot.subplots(2, 4, layout='tight')
+
+        ax = axarr[0]
+        fig.suptitle(f'{ext}, {roi}, {"_".join(feat.split("_")[2:])}\nC-index={c_index:0.03f}, CCC={ccc:0.03f}')
+
+        v5, v3, v2 = choices['repro_high'][1:] 
+        vs = choices['surv_high'][1]
+        ax[0].set_title(f"{v5:0.03f}")
+        ax[1].set_title(f"{v3:0.03f}")
+        ax[2].set_title(f"{v2:0.03f}")
+        ax[3].set_title(f"{vs:0.03f}")
+        ax[0].imshow(rim5, vmin=0, vmax=1, cmap='gray', aspect='equal')
+        ax[1].imshow(rim3, vmin=0, vmax=1, cmap='gray', aspect='equal')
+        ax[2].imshow(rim2, vmin=0, vmax=1, cmap='gray', aspect='equal')
+        ax[3].imshow(sim, vmin=0, vmax=1, cmap='gray', aspect='equal')
+        ax[0].set_frame_on(False)
+        ax[1].set_frame_on(False)
+        ax[2].set_frame_on(False)
+        ax[3].set_frame_on(False)
+        ax[0].set_xticks([])
+        ax[1].set_xticks([])
+        ax[2].set_xticks([])
+        ax[3].set_xticks([])
+        ax[0].set_yticks([])
+        ax[1].set_yticks([])
+        ax[2].set_yticks([])
+        ax[3].set_yticks([])
+
+        ax = axarr[1]
+        v5, v3, v2 = choices['repro_low'][1:] 
+        vs = choices['surv_low'][1]
+        ax[0].set_title(f"{v5:0.03f}")
+        ax[1].set_title(f"{v3:0.03f}")
+        ax[2].set_title(f"{v2:0.03f}")
+        ax[3].set_title(f"{vs:0.03f}")
+        ax[0].imshow(rim5l, vmin=0, vmax=1, cmap='gray', aspect='equal')
+        ax[1].imshow(rim3l, vmin=0, vmax=1, cmap='gray', aspect='equal')
+        ax[2].imshow(rim2l, vmin=0, vmax=1, cmap='gray', aspect='equal')
+        ax[3].imshow(siml, vmin=0, vmax=1, cmap='gray', aspect='equal')
+        ax[0].set_frame_on(False)
+        ax[1].set_frame_on(False)
+        ax[2].set_frame_on(False)
+        ax[3].set_frame_on(False)
+        ax[0].set_xticks([])
+        ax[1].set_xticks([])
+        ax[2].set_xticks([])
+        ax[3].set_xticks([])
+        ax[0].set_yticks([])
+        ax[1].set_yticks([])
+        ax[2].set_yticks([])
+        ax[3].set_yticks([])
+
+
+    with open(conf['selection_file']) as f:
+        objs = json.load(f)
+
+    hhchoice = objs.get("high_high") 
+    hlchoice = objs.get("high_low") 
+    lhchoice = objs.get("low_high") 
+    llchoice = objs.get("low_low") 
+
+    plot_choice(hhchoice)
+    plot_choice(hlchoice)
+    plot_choice(lhchoice)
+    plot_choice(llchoice)
+
+    pyplot.show()
+
+
+
 
 
 
