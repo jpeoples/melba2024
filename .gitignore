@@ -1,7 +1,8 @@
 .venv*
 *__pycache__*
 
-data/
+data/working
+data/output
 slurm_logs*/
 
 *.pdf
