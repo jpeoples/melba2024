@@ -80,7 +80,7 @@ python melba.py pareto_figs
 ```
 
 ## Multivariable analysis
-Because this section entails over YYYY training runs (100 times repeated 10-fold cross validation across N configurations), this section was designed to run on a SLURM cluster in batches.
+Because this section entails running 100 times repeated 10-fold cross validation across 315 configurations of feature set, CCC threshold, and feature selection count, (i.e. 315000 models are fitted), this section was designed to run on a SLURM cluster in batches.
 
 To run a batch:
 
